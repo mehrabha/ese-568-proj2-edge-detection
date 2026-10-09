@@ -104,6 +104,28 @@ def calculate_edges(img, size, thresh=10):
 
     return result
 
+def calculate_corners(img, size, thresh=10):
+    m = np.zeros((size, size, 3), dtype=np.float32)
+
+    for i in range(1, size - 1):
+        for j in range(1, size - 1):
+            dy, dx = int(img[i + 1, j]) - int(img[i, j]) / 10.0, int(img[i, j + 1]) - int(img[i, j]) / 10.0
+            second_moment_vals = np.array([dx ** 2, dy ** 2, dy * dx])
+            m[i, j] = second_moment_vals
+
+    result = np.zeros((size, size), dtype=np.uint8)
+    for i in range(1, size - 1):
+        for j in range(1, size - 1):
+            # TODO smooth with gaussian
+
+            mA = m[i, j][0]
+            mB = m[i, j][1]
+            mC = m[i, j][2]
+
+            p_val = (mA * mB - mC ** 2) - 
+            result[]
+    return result
+
 def normalize(img_filter):
     min = img_filter.min()
     max = img_filter.max()
@@ -187,6 +209,13 @@ def main():
             # calculate edges
             pic1_edges = calculate_edges(pic1_smoothed, n, j)
             cv2.imwrite(f"pic1_edges_sigma{i}_thresh{j}.png", pic1_edges)
+
+
+    ##### TASK 3 - Corner Detection #####
+    f4 = g1d(9, 2)
+    m = 9
+    pic1_smoothed_2 = apply_separable_filter(img1.copy(), m, n, f3)
+    corners = calculate_corners()
 
 
 
