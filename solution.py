@@ -4,10 +4,10 @@ Project 2: Edge Detection
 
 
 Usage: 
-    python solution.py <img1 path> <img2 path> <img size> <kernel size>
+    python solution.py <img1 path> <img2 path> <img size>
 
 Example:
-    python solution.py pic1grey300.jpg pic2grey300.jpg 300 3
+    python solution.py pic1grey300.jpg pic2grey300.jpg 300
 
 """
 
@@ -104,27 +104,48 @@ def calculate_edges(img, size, thresh=10):
 
     return result
 
-def calculate_corners(img, size, thresh=10):
-    m = np.zeros((size, size, 3), dtype=np.float32)
+def calculate_corners(img, size, thresh=40):
+    mt = np.zeros((size, size, 3), dtype=np.float32)
+    h = img.astype(np.float64)
 
+    # 2nd moment vals
     for i in range(1, size - 1):
         for j in range(1, size - 1):
-            dy, dx = int(img[i + 1, j]) - int(img[i, j]) / 10.0, int(img[i, j + 1]) - int(img[i, j]) / 10.0
+            #dy, dx = (h[i + 1, j] - h[i, j]) / 10.0, (h[i, j + 1] - h[i, j]) / 10.0    # works better without the arbitary division
+            dy, dx = h[i + 1, j] - h[i, j], h[i, j + 1] - h[i, j]
             second_moment_vals = np.array([dx ** 2, dy ** 2, dy * dx])
-            m[i, j] = second_moment_vals
+            mt[i, j] = second_moment_vals
 
-    result = np.zeros((size, size), dtype=np.uint8)
-    for i in range(1, size - 1):
-        for j in range(1, size - 1):
-            # TODO smooth with gaussian
+    result = np.zeros((size, size), dtype=np.float64)
 
-            mA = m[i, j][0]
-            mB = m[i, j][1]
-            mC = m[i, j][2]
 
-            p_val = (mA * mB - mC ** 2) - 
-            result[]
-    return result
+    # smooth using gaussian
+    f = g1d(11, 5.5)
+    r = 5
+    mtA, mtB, mtC = mt[:, :, 0], mt[:, :, 1], mt[:, :, 2]
+    mtA = apply_separable_filter(mtA, 11, size, f)
+    mtB = apply_separable_filter(mtB, 11, size, f)
+    mtC = apply_separable_filter(mtC, 11, size, f)
+
+
+    # detect corners using threshold
+    for i in range(r, size - r):
+        for j in range(r, size - r):
+
+            R_val = (mtA[i, j] * mtB[i, j] - mtC[i, j] ** 2) - .04 * (mtA[i, j] + mtB[i, j]) ** 2
+
+            if R_val > thresh:
+                result[i, j] = R_val
+
+    result2 = np.zeros((size, size), dtype=np.uint8)
+    
+    # non maxima suppression
+    for i in range(2 * r, size - 2 * r):    # thick border to eliminate edge points
+        for j in range(2 * r, size - 2 * r):
+            if local_maxima(result, i, j):
+                result2[i, j] = 255
+
+    return result2
 
 def normalize(img_filter):
     min = img_filter.min()
@@ -139,6 +160,19 @@ def check_conv_boundary(y, x, m, n):
         y >= n - m // 2 or
         x < m // 2 or
         x >= n - m // 2
+    )
+
+def local_maxima(img, x, y):
+    # Is pixel x,y is the greatest!
+    return (
+        img[x, y] > img[x + 1, y] and
+        img[x, y] > img[x - 1, y] and
+        img[x, y] > img[x, y + 1] and
+        img[x, y] > img[x, y - 1] and 
+        img[x, y] > img[x - 1, y - 1] and 
+        img[x, y] > img[x + 1, y + 1] and 
+        img[x, y] > img[x - 1, y + 1] and 
+        img[x, y] > img[x + 1, y - 1]
     )
 
 def g2d(k, s = 1):
@@ -175,47 +209,72 @@ def g1d(k, s = 1):
 def validate_img(img, s):
     return (img.shape[0] == s and img.shape[1] == s)
 
+def clip (num, min, max):
+    if num < min:
+        return min
+
+    if num > max:
+        return max
+
+    return num
+
 
 def main():
     if not len(sys.argv) == 4:
         raise ValueError(f"Invalid args\nUsage: python solution.py <img1 path> <img2 path> <img size>")
 
     img1 = cv2.imread(sys.argv[1], cv2.IMREAD_GRAYSCALE)
+    img1_color = cv2.imread(sys.argv[1])
     img2 = cv2.imread(sys.argv[2], cv2.IMREAD_GRAYSCALE)
     n = int(sys.argv[3])
 
 
-    ##### TASK 1 - Image Filtering & Convolution #####
+    print('##### TASK 1 - Image Filtering & Convolution #####')
     m = 3
     f1 = g2d(m, 4)    # gaussian blur
-    img1_blur = apply_filter(img1.copy(), m, n, f1)
+    img1_blur = apply_filter(img1, m, n, f1)
     cv2.imwrite('img1_blur.png', img1_blur)
+    print(f'Success: img1_blur.png')
 
     # simple 3x3 sharpening kernel
     f2 = np.loadtxt(FILTER, dtype=np.float32)
     #f2 = normalize(f2)
-    img1_sharpened = apply_filter(img1.copy(), m, n, f2)
+    img1_sharpened = apply_filter(img1, m, n, f2)
     cv2.imwrite('img1_sharpened.png', img1_sharpened)
 
+    print(f'Success: img1_sharpened.png')
 
-    ##### TASK 2 - Edge Detection #####
+
+    print('##### TASK 2 - Edge Detection #####')
     m = 9
     for i in [.5, 1, 2, 3.0]:
         for j in [20, 30, 40, 50]:
             # denoise with edge detection
             f3 = g1d(9, i)
-            pic1_smoothed = apply_separable_filter(img1.copy(), m, n, f3)
+            pic1_smoothed = apply_separable_filter(img1, m, n, f3)
 
             # calculate edges
             pic1_edges = calculate_edges(pic1_smoothed, n, j)
             cv2.imwrite(f"pic1_edges_sigma{i}_thresh{j}.png", pic1_edges)
+            print(f'Success: pic1_edges_sigma{i}_thresh{j}.png')
 
 
-    ##### TASK 3 - Corner Detection #####
-    f4 = g1d(9, 2)
+    print('##### TASK 3 - Corner Detection #####')
     m = 9
-    pic1_smoothed_2 = apply_separable_filter(img1.copy(), m, n, f3)
-    corners = calculate_corners()
+    f4 = g1d(m, 2)
+    pic1_smoothed_2 = apply_separable_filter(img1, m, n, f4)
+
+    for thresh in range(250, 2500, 500):
+        corners_output = img1_color.copy()
+        corners = calculate_corners(pic1_smoothed_2, 300, thresh=thresh)
+
+        for i in range(n):
+            for j in range(n):
+                if corners[i, j] == 255:
+                    corners_output[i, j] = [0, 0, 255]
+
+        cv2.imwrite(f"harris_corner_detect_thresh{thresh}.png", corners_output)
+        print(f'Success: harris_corner_detect_thresh{thresh}.png')
 
 
 
