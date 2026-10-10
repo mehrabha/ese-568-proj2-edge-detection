@@ -92,11 +92,14 @@ def convolve(img, y, x, f, m, separable = False, axis = 0):
     return result
 
 def calculate_edges(img, size, thresh=10):
+    # Canny edge detection with two threshhold
+
+    gradents = get_gradients(img, size)
     result = np.zeros((size, size), dtype=np.uint8)
 
     for i in range(1, size - 1):
         for j in range(1, size - 1):
-            dy, dx = int(img[i + 1, j]) - int(img[i, j]), int(img[i, j + 1]) - int(img[i, j])
+            dy, dx = gradents[i, j][0], gradents[i, j][1]
             p_val = math.sqrt(dy ** 2 + dx ** 2)
 
             if p_val > thresh:
@@ -105,19 +108,17 @@ def calculate_edges(img, size, thresh=10):
     return result
 
 def calculate_corners(img, size, thresh=40):
+    gradents = get_gradients(img, size)
     mt = np.zeros((size, size, 3), dtype=np.float32)
-    h = img.astype(np.float64)
 
     # 2nd moment vals
     for i in range(1, size - 1):
         for j in range(1, size - 1):
-            #dy, dx = (h[i + 1, j] - h[i, j]) / 10.0, (h[i, j + 1] - h[i, j]) / 10.0    # works better without the arbitary division
-            dy, dx = h[i + 1, j] - h[i, j], h[i, j + 1] - h[i, j]
+            dy, dx = gradents[i, j][0], gradents[i, j][1]   # works better without the arbitary division
             second_moment_vals = np.array([dx ** 2, dy ** 2, dy * dx])
             mt[i, j] = second_moment_vals
 
     result = np.zeros((size, size), dtype=np.float64)
-
 
     # smooth using gaussian
     f = g1d(11, 5.5)
@@ -145,7 +146,64 @@ def calculate_corners(img, size, thresh=40):
             if local_maxima(result, i, j):
                 result2[i, j] = 255
 
-    return result2
+    return result2, gradents
+
+def local_feature_descriptor(corners, gradients, img_size, sample_size):
+    # generates grad vectors describing features around each corner point
+
+    result = []
+
+    for i in range(img_size):
+        for j in range(img_size):
+            if corners[i, j] == 255:
+                hist = get_grad_histogram(gradients, i, j, sample_size)
+                print((i, j, hist))
+                result.append((i, j, hist))
+
+    return result
+
+def match_descriptors(hist1, hist2, size):
+    for i in range(0, size, 30):
+        for j in range(0, size, 30):
+
+def get_gradients(img, size):
+    h = img.astype(np.float64)
+
+    result = np.zeros((size, size, 2), dtype=np.float64)
+    for i in range(1, size - 1):
+        for j in range(1, size - 1):
+            result[i, j] = np.array([h[i + 1, j] - h[i, j], h[i, j + 1] - h[i, j]])
+
+    return result
+
+
+def get_grad_histogram(gradients, y, x, size, normalize=True):
+    radius = size // 2
+    hist = np.zeros(8, dtype=np.float64)
+
+    for i in range(-1 * radius, radius + 1):
+        for j in range(-1 * radius, radius + 1):
+            dy, dx = gradients[y + i, x + j][0], gradients[y + i, x + j][1]
+            mag =  math.sqrt(dy ** 2 + dx ** 2)
+            deg = math.degrees(math.atan2(dy, dx)) % 360
+
+            hist[int(deg / 45)] += mag
+
+    if normalize:
+        # normalize hist
+        indx = np.argmax(hist)
+        result = np.zeros(8, dtype=np.float64)
+
+        for i in [4, 5, 6, 7, 0, 1, 2, 3]:
+            result[i] = hist[indx]
+            indx += 1
+            if indx > 7:
+                indx = 0
+    else:
+        result = hist
+
+    return result
+
 
 def normalize(img_filter):
     min = img_filter.min()
@@ -172,6 +230,19 @@ def local_maxima(img, x, y):
         img[x, y] > img[x - 1, y - 1] and 
         img[x, y] > img[x + 1, y + 1] and 
         img[x, y] > img[x - 1, y + 1] and 
+        img[x, y] > img[x + 1, y - 1]
+    )
+
+def find_neighbors(img, x, y, thresh):
+    # check if any nearby neighbors meet the threshold
+    return (
+        img[x, y] > img[x + 1, y] or
+        img[x, y] > img[x - 1, y] or
+        img[x, y] > img[x, y + 1] or
+        img[x, y] > img[x, y - 1] or 
+        img[x, y] > img[x - 1, y - 1] or 
+        img[x, y] > img[x + 1, y + 1] or 
+        img[x, y] > img[x - 1, y + 1] or 
         img[x, y] > img[x + 1, y - 1]
     )
 
@@ -260,13 +331,14 @@ def main():
 
 
     print('##### TASK 3 - Corner Detection #####')
+    # Part a
     m = 9
     f4 = g1d(m, 2)
     pic1_smoothed_2 = apply_separable_filter(img1, m, n, f4)
 
-    for thresh in range(250, 2500, 500):
+    for thresh in range(0, 601, 150):
         corners_output = img1_color.copy()
-        corners = calculate_corners(pic1_smoothed_2, 300, thresh=thresh)
+        corners, gradients = calculate_corners(pic1_smoothed_2, 300, thresh=thresh)
 
         for i in range(n):
             for j in range(n):
@@ -275,6 +347,23 @@ def main():
 
         cv2.imwrite(f"harris_corner_detect_thresh{thresh}.png", corners_output)
         print(f'Success: harris_corner_detect_thresh{thresh}.png')
+
+    # Part b
+    print(f'local feature descriptors for img1: ')
+    corners, gradients = calculate_corners(pic1_smoothed_2, 300, thresh=300)
+    hists = local_feature_descriptor(corners, gradients, n, sample_size=9)
+
+
+    print('##### TASK 4 - Image matching #####')
+    pic2_smoothed = apply_separable_filter(img2, m, n, f4)
+    corners2, gradients2 = calculate_corners(pic2_smoothed, 300, thresh=300)
+    hist2 = local_feature_descriptor(corners2, gradients2, n, sample_size=9)
+
+
+    
+    
+
+    
 
 
 
