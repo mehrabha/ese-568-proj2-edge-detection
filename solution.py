@@ -141,14 +141,14 @@ def calculate_corners(img, size, thresh=40):
     result2 = np.zeros((size, size), dtype=np.uint8)
     
     # non maxima suppression
-    for i in range(2 * r, size - 2 * r):    # thick border to eliminate edge points
+    for i in range(2 * r, size - 2 * r):
         for j in range(2 * r, size - 2 * r):
             if local_maxima(result, i, j):
                 result2[i, j] = 255
 
     return result2, gradents
 
-def local_feature_descriptor(corners, gradients, img_size, sample_size):
+def local_feature_descriptor(corners, gradients, img_size, vec_size, sample_size):
     # generates grad vectors describing features around each corner point
 
     result = []
@@ -156,15 +156,63 @@ def local_feature_descriptor(corners, gradients, img_size, sample_size):
     for i in range(img_size):
         for j in range(img_size):
             if corners[i, j] == 255:
-                hist = get_grad_histogram(gradients, i, j, sample_size)
-                print((i, j, hist))
+                hist = get_grad_histogram(gradients, i, j, sample_size, vec_size, normalize=False, rotate=True)
+                print(f"Gradient hist for ({i}, {j}): {' '.join([str(round(pt, 1)) for pt in hist])})")
                 result.append((i, j, hist))
 
     return result
 
-def match_descriptors(hist1, hist2, size):
-    for i in range(0, size, 30):
-        for j in range(0, size, 30):
+def match_descriptors(hists1, hists2, ratio_test=None):
+    # find matches in img2 for each corner pt in img1
+
+    result = []
+    for y, x, hist in hists1:
+        distances = []
+
+        for y2, x2, hist2 in hists2:
+            dist = np.linalg.norm(hist2 - hist)
+            distances.append([dist, y2, x2])
+
+        distances.sort(key=lambda x: x[0])
+
+        # ratio test
+        if ratio_test and len(distances) > 0:
+            ratio = distances[0][0] / distances[1][0]
+            if ratio < .1 or ratio > ratio_test:  #eg between .2 to .7
+                continue
+
+        pt = [y, x] + distances[0]
+
+        result.append(pt)
+
+    result.sort(key=lambda x: x[2])
+
+    # keep up to 16 points with the best matches
+    return result[:min(len(result), 16)]
+
+
+def solve_affine_least_sq(matches):
+    n = len(matches)
+
+    A = np.zeros((2 * n, 6), dtype=np.float64)
+    b = np.zeros(2 * n, dtype=np.float64)
+
+    for i, match in enumerate(matches):
+        a1 = np.array([match[4], match[3], 1, 0, 0, 0])
+        a2 = np.array([0, 0, 0, match[4], match[3], 1])
+        b1 = match[1]
+        b2 = match[0]
+
+        A[2 * i] = a1
+        b[2 * i] = b1
+        A[(2 * i) + 1] = a2
+        b[(2 * i) + 1] = b2
+
+    AtA = A.T @ A
+    Atb = A.T @ b
+    x = np.linalg.inv(AtA) @ Atb
+
+    return x
 
 def get_gradients(img, size):
     h = img.astype(np.float64)
@@ -177,9 +225,10 @@ def get_gradients(img, size):
     return result
 
 
-def get_grad_histogram(gradients, y, x, size, normalize=True):
+def get_grad_histogram(gradients, y, x, size, vec_size, normalize=False, rotate=False):
     radius = size // 2
-    hist = np.zeros(8, dtype=np.float64)
+    bucket_width = 360 / vec_size
+    hist = np.zeros(vec_size, dtype=np.float64)
 
     for i in range(-1 * radius, radius + 1):
         for j in range(-1 * radius, radius + 1):
@@ -187,20 +236,17 @@ def get_grad_histogram(gradients, y, x, size, normalize=True):
             mag =  math.sqrt(dy ** 2 + dx ** 2)
             deg = math.degrees(math.atan2(dy, dx)) % 360
 
-            hist[int(deg / 45)] += mag
+            hist[int(deg / bucket_width)] += mag
 
-    if normalize:
-        # normalize hist
+    if rotate:
         indx = np.argmax(hist)
-        result = np.zeros(8, dtype=np.float64)
+        result = np.roll(hist, -indx)
 
-        for i in [4, 5, 6, 7, 0, 1, 2, 3]:
-            result[i] = hist[indx]
-            indx += 1
-            if indx > 7:
-                indx = 0
     else:
         result = hist
+
+    if normalize:
+        result /= np.linalg.norm(result)    # improves matches
 
     return result
 
@@ -301,8 +347,8 @@ def main():
 
 
     print('##### TASK 1 - Image Filtering & Convolution #####')
-    m = 3
-    f1 = g2d(m, 4)    # gaussian blur
+    m = 9
+    f1 = g2d(m, m/4)    # gaussian blur
     img1_blur = apply_filter(img1, m, n, f1)
     cv2.imwrite('img1_blur.png', img1_blur)
     print(f'Success: img1_blur.png')
@@ -310,7 +356,7 @@ def main():
     # simple 3x3 sharpening kernel
     f2 = np.loadtxt(FILTER, dtype=np.float32)
     #f2 = normalize(f2)
-    img1_sharpened = apply_filter(img1, m, n, f2)
+    img1_sharpened = apply_filter(img1, 3, n, f2)
     cv2.imwrite('img1_sharpened.png', img1_sharpened)
 
     print(f'Success: img1_sharpened.png')
@@ -329,44 +375,75 @@ def main():
             cv2.imwrite(f"pic1_edges_sigma{i}_thresh{j}.png", pic1_edges)
             print(f'Success: pic1_edges_sigma{i}_thresh{j}.png')
 
-
     print('##### TASK 3 - Corner Detection #####')
     # Part a
     m = 9
     f4 = g1d(m, 2)
     pic1_smoothed_2 = apply_separable_filter(img1, m, n, f4)
 
-    for thresh in range(0, 601, 150):
+    for thresh in range(0, 500, 100):
         corners_output = img1_color.copy()
         corners, gradients = calculate_corners(pic1_smoothed_2, 300, thresh=thresh)
 
         for i in range(n):
             for j in range(n):
                 if corners[i, j] == 255:
+                    corners_output[i - 1, j] , corners_output[i + 1, j] = [0, 0, 255], [0, 0, 255]
                     corners_output[i, j] = [0, 0, 255]
+                    corners_output[i, j - 1], corners_output[i, j + 1] = [0, 0, 255], [0, 0, 255]
 
         cv2.imwrite(f"harris_corner_detect_thresh{thresh}.png", corners_output)
         print(f'Success: harris_corner_detect_thresh{thresh}.png')
 
     # Part b
     print(f'local feature descriptors for img1: ')
-    corners, gradients = calculate_corners(pic1_smoothed_2, 300, thresh=300)
-    hists = local_feature_descriptor(corners, gradients, n, sample_size=9)
+    corners, gradients = calculate_corners(pic1_smoothed_2, 300, thresh=100)
+    hists = local_feature_descriptor(corners, gradients, n, vec_size=12, sample_size=15)
 
 
     print('##### TASK 4 - Image matching #####')
     pic2_smoothed = apply_separable_filter(img2, m, n, f4)
-    corners2, gradients2 = calculate_corners(pic2_smoothed, 300, thresh=300)
-    hist2 = local_feature_descriptor(corners2, gradients2, n, sample_size=9)
+    corners2, gradients2 = calculate_corners(pic2_smoothed, 300, thresh=100)
+    hist2 = local_feature_descriptor(corners2, gradients2, n, vec_size=12, sample_size=15)
 
+    matches = match_descriptors(hists, hist2, ratio_test=.60)
+    if len(matches) >= 3:
+        print(f'Success: {len(matches)} matches')
+
+        a, b, c, d, e, f = solve_affine_least_sq(matches)
+        print(f"Affine mtx: \n {a} {b} \n{d} {e}")
+        print(f"Translation vector: \n{c}\n{f}")
+    else:
+        print(f'Failure: {len(matches)} matches < 3')
+
+
+    print('Drawing matches')
+
+    h1, w1 = img1.shape[:2]
+    h2, w2 = img2.shape[:2]
+
+    # Create side-by-side color canvas
+    vis = np.zeros((max(h1, h2), w1 + w2, 3), dtype=np.uint8)
+    vis[:h1, :w1] = (
+        cv2.cvtColor(img1, cv2.COLOR_GRAY2BGR) if len(img1.shape) == 2 else img1
+    )
+    vis[:h2, w1 : w1 + w2] = (
+        cv2.cvtColor(img2, cv2.COLOR_GRAY2BGR) if len(img2.shape) == 2 else img2
+    )
+
+    for match in matches:
+        pt1 = (int(match[1]), int(match[0]))
+        pt2 = (int(match[4]) + w1, int(match[3]))
+
+        # Draw correspondence line and landmark points
+        cv2.line(vis, pt1, pt2, (0, 255, 0), thickness=1)
+        cv2.circle(vis, pt1, radius=2, color=(0, 0, 255), thickness=-1)
+        cv2.circle(vis, pt2, radius=2, color=(0, 0, 255), thickness=-1)
+
+    cv2.imwrite('image_matches.png', vis)
+    print(f"Success: image_matches.png")
 
     
-    
-
-    
-
-
-
 
 if __name__ == '__main__':
     main()
